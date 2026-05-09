@@ -1,0 +1,39 @@
+# Rust build artifacts
+/target
+*.exe
+
+# IDE and editor configurations
+/.claude
+/.vscode
+/.idea
+*.swp
+*.swo
+*~
+
+# Release builds
+/target
+
+# Data directories (generated during runtime)
+/data
+
+# Test output directories (generated during testing)
+/test_output
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Binary output files from tests/examples
+*.bin
+stderr.txt
+stdout.txt
+*_stderr.txt
+*_stdout.txt
+output.bin
+
+# OS generated files
+.DS_Store
+Thumbs.db
+tmp
+plan.md

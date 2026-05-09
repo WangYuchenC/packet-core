@@ -1,0 +1,43 @@
+[package]
+name = "packet-core"
+version = "1.0.0"
+authors = ["Wang Yuchen <fancifulwyc@gmail.com>"]
+homepage = "https://github.com/WangYuchenC/packet-core"
+documentation = "https://github.com/WangYuchenC/packet-core#readme"
+keywords = ["packet", "serialization", "binary", "protocol", "dsl"]
+categories = ["encoding", "parser-implementations", "command-line-utilities"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/WangYuchenC/packet-core"
+edition = "2021"
+rust-version = "1.95"
+description = "Core library for packet definition (`.pkt`) DSL parsing and binary codec"
+readme = "README.md"
+
+[dependencies]
+logos = "0.14"
+chumsky = "0.9"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+insta = "1.40"
+tempfile = "3.12"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+
+[[bench]]
+name = "parse_bench"
+harness = false
+
+[[bench]]
+name = "encode_bench"
+harness = false
+
+[[bench]]
+name = "decode_bench"
+harness = false
+
+[[bench]]
+name = "codec"
+path = "benches/codec.rs"
+harness = false
