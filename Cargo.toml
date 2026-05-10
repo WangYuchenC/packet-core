@@ -1,6 +1,6 @@
 [package]
 name = "packet-core"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Wang Yuchen <fancifulwyc@gmail.com>"]
 homepage = "https://github.com/WangYuchenC/packet-core"
 documentation = "https://github.com/WangYuchenC/packet-core#readme"
