@@ -136,6 +136,24 @@ fn validate_struct(struct_def: &StructDef, schema: &Schema) -> Result<()> {
         }
     }
 
+    // 检查 prefix(disable) + receive 结构体的变长字段必须有 len_ref 或 remaining
+    if !schema.is_prefix_enabled() && struct_def.direction == Some(Direction::Receive) {
+        for field in &struct_def.fields {
+            if is_variable_length_field_type(&field.ty)
+                && !has_len_ref_attribute(&field.attributes)
+                && !has_remaining_attribute(&field.attributes)
+            {
+                return Err(CoreError::validation(
+                    "E016",
+                    format!(
+                        "field '{}' in receive struct '{}' must have #[len_ref] or #[remaining] when prefix is disabled",
+                        field.name, struct_def.name
+                    ),
+                ));
+            }
+        }
+    }
+
     // 检查 send 结构体是否有值
     if struct_def.direction == Some(Direction::Send) {
         for field in &struct_def.fields {
@@ -365,6 +383,18 @@ fn has_remaining_attribute(attrs: &[crate::ast::FieldAttribute]) -> bool {
     attrs
         .iter()
         .any(|attr| matches!(attr, crate::ast::FieldAttribute::Remaining))
+}
+
+/// 检查是否有 len_ref 属性
+fn has_len_ref_attribute(attrs: &[crate::ast::FieldAttribute]) -> bool {
+    attrs
+        .iter()
+        .any(|attr| matches!(attr, crate::ast::FieldAttribute::LenRef(_)))
+}
+
+/// 检查是否为变长字段类型（Vec/String/Bytes）
+fn is_variable_length_field_type(ty: &crate::ast::Type) -> bool {
+    matches!(ty, crate::ast::Type::Vec(_) | crate::ast::Type::String | crate::ast::Type::Bytes)
 }
 
 /// 验证结果

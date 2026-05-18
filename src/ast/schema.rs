@@ -81,6 +81,15 @@ impl Schema {
             })
             .unwrap_or(Endianness::Big)
     }
+
+    /// 检查是否启用了自动长度前缀
+    #[must_use]
+    pub fn is_prefix_enabled(&self) -> bool {
+        !self
+            .file_attributes
+            .iter()
+            .any(|attr| matches!(attr, FileAttribute::PrefixDisabled))
+    }
 }
 
 impl Default for Schema {
@@ -100,6 +109,8 @@ pub enum FileAttribute {
     ImportPath(String),
     /// 文件级文档 #![doc("...")]
     Doc(String),
+    /// 禁用自动长度前缀 #![prefix(disable)]
+    PrefixDisabled,
 }
 
 /// 导入语句

@@ -91,6 +91,8 @@ fn file_attribute_parser() -> impl Parser<Token, FileAttribute, Error = Simple<T
             import_path_file_attr_parser(),
             // #![doc("...")]
             doc_file_attr_parser(),
+            // #![prefix(disable)]
+            prefix_file_attr_parser(),
         )))
         .then_ignore(just(Token::BracketClose))
 }
@@ -133,6 +135,16 @@ fn doc_file_attr_parser() -> impl Parser<Token, FileAttribute, Error = Simple<To
         .then(select! { Token::StringLiteral(doc) => doc })
         .then_ignore(just(Token::ParenClose))
         .map(|(_, doc)| FileAttribute::Doc(doc))
+}
+
+/// #![prefix(disable)] 解析器
+fn prefix_file_attr_parser() -> impl Parser<Token, FileAttribute, Error = Simple<Token>> + Clone {
+    just(Token::Ident("prefix".to_string()))
+        .ignore_then(just(Token::ParenOpen))
+        .ignore_then(select! {
+            Token::Ident(name) if name == "disable" => FileAttribute::PrefixDisabled,
+        })
+        .then_ignore(just(Token::ParenClose))
 }
 
 /// 结构体定义解析器 - 移除 pub 支持
@@ -1168,5 +1180,30 @@ mod tests {
         let def = schema.get_struct("SensorData").unwrap();
         assert!(def.doc.as_ref().unwrap().contains("Sensor data packet"));
         assert_eq!(def.fields[0].name, "temp");
+    }
+
+    #[test]
+    fn test_parse_prefix_disable_attribute() {
+        let input = r#"
+            #![prefix(disable)]
+
+            #[send]
+            struct ManualLenPacket {
+                #[auto(data)]
+                count: u8,
+                data: Vec<u8> = [10, 20, 30],
+            }
+        "#;
+        let (tokens, spans) = lex(input);
+        let result = parse_schema_tokens(&tokens, &spans);
+        assert!(result.is_ok());
+        let schema = result.unwrap();
+
+        assert_eq!(schema.file_attributes.len(), 1);
+        match &schema.file_attributes[0] {
+            FileAttribute::PrefixDisabled => {}
+            _ => panic!("Expected PrefixDisabled attribute"),
+        }
+        assert!(!schema.is_prefix_enabled());
     }
 }

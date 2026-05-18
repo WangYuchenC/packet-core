@@ -208,23 +208,37 @@ impl<'a> Codec<'a> {
             Some(ref_field_name) => {
                 // #[auto(field)] - 计算指定字段的元素个数或字节数
                 // 需要从 field_values 中获取引用字段的值
+                let ref_field = _struct_def
+                    .fields
+                    .iter()
+                    .find(|f| f.name == ref_field_name);
                 if let Some(ref_value) = _field_values.get(ref_field_name.as_str()) {
                     match ref_value {
                         Value::Array(arr) => arr.len() as u64,
                         Value::Bytes(bytes) => bytes.len() as u64,
                         Value::String(s) => s.len() as u64,
+                        // 处理十六进制整数作为 Bytes（如 Bytes = 0xBEAD）
+                        Value::Integer(n)
+                            if ref_field.map_or(false, |f| f.ty == Type::Bytes) =>
+                        {
+                            integer_to_byte_len(*n)
+                        }
                         _ => 1,
                     }
                 } else {
                     // 在 struct_def 中查找字段默认值
-                    if let Some(ref_field) =
-                        _struct_def.fields.iter().find(|f| f.name == ref_field_name)
-                    {
+                    if let Some(ref_field) = ref_field {
                         if let Some(ref_value) = &ref_field.value {
                             match ref_value {
                                 Value::Array(arr) => arr.len() as u64,
                                 Value::Bytes(bytes) => bytes.len() as u64,
                                 Value::String(s) => s.len() as u64,
+                                // 处理十六进制整数作为 Bytes（如 Bytes = 0xBEAD）
+                                Value::Integer(n)
+                                    if ref_field.ty == Type::Bytes =>
+                                {
+                                    integer_to_byte_len(*n)
+                                }
                                 _ => 1,
                             }
                         } else {
@@ -436,10 +450,66 @@ impl<'a> Codec<'a> {
 
             // 检查是否为 len_ref 字段（receive 中作为普通字段解码）
             if get_len_ref_attribute(&field.attributes).is_some() {
-                let (value, consumed) =
-                    decode_value_with_endian(data, offset, &field.ty, self.schema, endian)?;
-                fields.push((field.name.clone(), value));
-                offset += consumed;
+                let prefix_enabled = self.schema.is_prefix_enabled();
+
+                if !prefix_enabled && is_variable_length_type(&field.ty) {
+                    // prefix 禁用 + len_ref：手动解码变长字段
+                    let ref_field_name = get_len_ref_attribute(&field.attributes).unwrap();
+                    let count = get_decoded_field_value_as_usize(&fields, ref_field_name)
+                        .ok_or_else(|| CoreError::codec(
+                            "decode",
+                            format!(
+                                "len_ref references field '{}' which is not yet decoded or not an integer",
+                                ref_field_name
+                            ),
+                        ))?;
+
+                    match &field.ty {
+                        Type::Vec(inner) => {
+                            let mut values = Vec::new();
+                            let mut cur = offset;
+                            for _ in 0..count {
+                                let (val, consumed) = decode_value_with_endian(
+                                    data, cur, inner, self.schema, endian,
+                                )?;
+                                values.push(val);
+                                cur += consumed;
+                            }
+                            fields.push((field.name.clone(), DecodedValue::Vec(values)));
+                            offset = cur;
+                        }
+                        Type::Bytes => {
+                            check_buffer_size(data, offset, count)?;
+                            let bytes_data = data[offset..offset + count].to_vec();
+                            fields.push((field.name.clone(), DecodedValue::Bytes(bytes_data)));
+                            offset += count;
+                        }
+                        Type::String => {
+                            check_buffer_size(data, offset, count)?;
+                            let s = String::from_utf8(data[offset..offset + count].to_vec())
+                                .map_err(|_| CoreError::codec(
+                                    "decode",
+                                    format!("len_ref field '{}' contains invalid UTF-8", field.name),
+                                ))?;
+                            fields.push((field.name.clone(), DecodedValue::String(s)));
+                            offset += count;
+                        }
+                        _ => {
+                            return Err(CoreError::codec(
+                                "decode",
+                                format!(
+                                    "len_ref on non-variable type '{:?}' with prefix disabled is not supported",
+                                    field.ty
+                                ),
+                            ));
+                        }
+                    }
+                } else {
+                    let (value, consumed) =
+                        decode_value_with_endian(data, offset, &field.ty, self.schema, endian)?;
+                    fields.push((field.name.clone(), value));
+                    offset += consumed;
+                }
                 continue;
             }
 
@@ -1292,12 +1362,16 @@ fn encode_value_with_endian(
         (Value::String(s), Type::String) => {
             // 字符串编码: 4字节长度(大端序) + 内容
             let bytes = s.as_bytes();
-            buffer.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            if schema.is_prefix_enabled() {
+                buffer.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+            }
             buffer.extend_from_slice(bytes);
         }
         (Value::Bytes(b), Type::Bytes) => {
             // 字节数组编码: 4字节长度(大端序) + 内容
-            buffer.extend_from_slice(&(b.len() as u32).to_be_bytes());
+            if schema.is_prefix_enabled() {
+                buffer.extend_from_slice(&(b.len() as u32).to_be_bytes());
+            }
             buffer.extend_from_slice(b);
         }
         // 十六进制整数作为 Bytes
@@ -1329,12 +1403,16 @@ fn encode_value_with_endian(
                 };
                 (b, 16)
             };
-            buffer.extend_from_slice(&(len as u32).to_be_bytes());
+            if schema.is_prefix_enabled() {
+                buffer.extend_from_slice(&(len as u32).to_be_bytes());
+            }
             buffer.extend_from_slice(&bytes);
         }
         (Value::Array(arr), Type::Vec(inner_ty)) => {
             // Vec编码: 4字节长度(大端序) + 元素
-            buffer.extend_from_slice(&(arr.len() as u32).to_be_bytes());
+            if schema.is_prefix_enabled() {
+                buffer.extend_from_slice(&(arr.len() as u32).to_be_bytes());
+            }
             for item in arr {
                 encode_value_with_endian(buffer, item, inner_ty, endian, schema)?;
             }
@@ -2060,6 +2138,12 @@ fn decode_value_with_endian(
             Ok((DecodedValue::Bool(data[offset] != 0), 1))
         }
         Type::String => {
+            if !schema.is_prefix_enabled() {
+                return Err(CoreError::codec(
+                    "decode",
+                    "prefix disabled: String must use #[len_ref] or #[remaining]".to_string(),
+                ));
+            }
             // 字符串解码: 4字节长度(大端序) + 内容
             check_buffer_size(data, offset, 4)?;
             let len_bytes = [
@@ -2076,6 +2160,12 @@ fn decode_value_with_endian(
             Ok((DecodedValue::String(value), 4 + len))
         }
         Type::Bytes => {
+            if !schema.is_prefix_enabled() {
+                return Err(CoreError::codec(
+                    "decode",
+                    "prefix disabled: Bytes must use #[len_ref] or #[remaining]".to_string(),
+                ));
+            }
             // 字节数组解码: 4字节长度(大端序) + 内容
             check_buffer_size(data, offset, 4)?;
             let len_bytes = [
@@ -2090,6 +2180,12 @@ fn decode_value_with_endian(
             Ok((DecodedValue::Bytes(bytes_data), 4 + len))
         }
         Type::Vec(inner_ty) => {
+            if !schema.is_prefix_enabled() {
+                return Err(CoreError::codec(
+                    "decode",
+                    "prefix disabled: Vec must use #[len_ref] or #[remaining]".to_string(),
+                ));
+            }
             // Vec解码: 4字节长度(大端序) + 元素
             check_buffer_size(data, offset, 4)?;
             let len_bytes = [
@@ -2279,4 +2375,47 @@ fn get_file_endian_attribute(schema: &Schema) -> Option<Endianness> {
         crate::ast::FileAttribute::Endian(endian) => Some(*endian),
         _ => None,
     })
+}
+
+/// 判断类型是否为变长类型（Vec/String/Bytes）
+fn is_variable_length_type(ty: &Type) -> bool {
+    matches!(ty, Type::Vec(_) | Type::String | Type::Bytes)
+}
+
+/// 从已解码字段中获取整数值（转为 usize）
+fn get_decoded_field_value_as_usize(
+    fields: &[(String, DecodedValue)],
+    name: &str,
+) -> Option<usize> {
+    fields.iter().find_map(|(n, v)| {
+        if n != name {
+            return None;
+        }
+        match v {
+            DecodedValue::U8(val) => Some(*val as usize),
+            DecodedValue::U16(val) => Some(*val as usize),
+            DecodedValue::U32(val) => Some(*val as usize),
+            DecodedValue::U64(val) => Some(*val as usize),
+            DecodedValue::I8(val) if *val >= 0 => Some(*val as usize),
+            DecodedValue::I16(val) if *val >= 0 => Some(*val as usize),
+            DecodedValue::I32(val) if *val >= 0 => Some(*val as usize),
+            DecodedValue::I64(val) if *val >= 0 => Some(*val as usize),
+            _ => None,
+        }
+    })
+}
+
+/// 计算整数作为 Bytes 类型时的字节长度
+fn integer_to_byte_len(n: i128) -> u64 {
+    if n <= i128::from(u8::MAX) {
+        1
+    } else if n <= i128::from(u16::MAX) {
+        2
+    } else if n <= i128::from(u32::MAX) {
+        4
+    } else if n <= i128::from(u64::MAX) {
+        8
+    } else {
+        16
+    }
 }

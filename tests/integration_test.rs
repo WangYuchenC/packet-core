@@ -1002,3 +1002,264 @@ fn test_encode_field_no_value() {
     let result = validate_schema(&schema);
     assert!(result.is_err());
 }
+
+// ==================== #[prefix(disable)] 测试 ====================
+
+#[test]
+fn test_prefix_disabled_vec_roundtrip() {
+    let schema_src = r#"
+        #![prefix(disable)]
+
+        #[send]
+        struct ManualLenSend {
+            #[auto(data)]
+            count: u8,
+            data: Vec<u8> = [10, 20, 30],
+        }
+
+        #[receive]
+        struct ManualLenRecv {
+            count: u8,
+            #[len_ref(count)]
+            data: Vec<u8>,
+        }
+    "#;
+
+    let schema = parse_schema(schema_src).expect("parse failed");
+    validate_schema(&schema).expect("validation failed");
+
+    let send_codec = Codec::compile(&schema, "ManualLenSend").expect("compile send failed");
+    let encoded = send_codec.encode().expect("encode failed");
+
+    // count(1) + 3 data bytes = 4 bytes total, no 4-byte Vec prefix
+    assert_eq!(encoded.len(), 4);
+    assert_eq!(encoded[0], 0x03);          // auto-filled count
+    assert_eq!(&encoded[1..4], &[0x0A, 0x14, 0x1E]); // data bytes
+
+    let recv_codec = Codec::compile(&schema, "ManualLenRecv").expect("compile recv failed");
+    let decoded = recv_codec.decode(&encoded).expect("decode failed");
+
+    assert_eq!(decoded.fields.len(), 2);
+    assert_eq!(decoded.fields[0].1, DecodedValue::U8(3));
+    if let DecodedValue::Vec(items) = &decoded.fields[1].1 {
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], DecodedValue::U8(10));
+        assert_eq!(items[1], DecodedValue::U8(20));
+        assert_eq!(items[2], DecodedValue::U8(30));
+    } else {
+        panic!("expected Vec for data field");
+    }
+}
+
+#[test]
+fn test_prefix_disabled_vec_u32_roundtrip() {
+    let schema_src = r#"
+        #![prefix(disable)]
+
+        #[send]
+        struct VecU32Send {
+            #[auto(items)]
+            count: u16,
+            items: Vec<u32> = [100, 200, 300],
+        }
+
+        #[receive]
+        struct VecU32Recv {
+            count: u16,
+            #[len_ref(count)]
+            items: Vec<u32>,
+        }
+    "#;
+
+    let schema = parse_schema(schema_src).expect("parse failed");
+    validate_schema(&schema).expect("validation failed");
+
+    let send_codec = Codec::compile(&schema, "VecU32Send").expect("compile failed");
+    let encoded = send_codec.encode().expect("encode failed");
+
+    // count(2) + 3*4 = 14 bytes, no 4-byte Vec prefix
+    assert_eq!(encoded.len(), 14);
+    assert_eq!(&encoded[0..2], &[0x00, 0x03]); // count = 3
+    assert_eq!(&encoded[2..6], &[0x00, 0x00, 0x00, 0x64]); // 100
+    assert_eq!(&encoded[6..10], &[0x00, 0x00, 0x00, 0xC8]); // 200
+    assert_eq!(&encoded[10..14], &[0x00, 0x00, 0x01, 0x2C]); // 300
+
+    let recv_codec = Codec::compile(&schema, "VecU32Recv").expect("compile failed");
+    let decoded = recv_codec.decode(&encoded).expect("decode failed");
+
+    assert_eq!(decoded.fields.len(), 2);
+    assert_eq!(decoded.fields[0].1, DecodedValue::U16(3));
+    if let DecodedValue::Vec(items) = &decoded.fields[1].1 {
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], DecodedValue::U32(100));
+        assert_eq!(items[1], DecodedValue::U32(200));
+        assert_eq!(items[2], DecodedValue::U32(300));
+    } else {
+        panic!("expected Vec for items field");
+    }
+}
+
+#[test]
+fn test_prefix_disabled_bytes_roundtrip() {
+    let schema_src = r#"
+        #![prefix(disable)]
+
+        #[send]
+        struct BytesSend {
+            #[auto(payload)]
+            len: u8,
+            payload: Bytes = 0xBEAD,
+        }
+
+        #[receive]
+        struct BytesRecv {
+            len: u8,
+            #[len_ref(len)]
+            payload: Bytes,
+        }
+    "#;
+
+    let schema = parse_schema(schema_src).expect("parse failed");
+    validate_schema(&schema).expect("validation failed");
+
+    let send_codec = Codec::compile(&schema, "BytesSend").expect("compile failed");
+    let encoded = send_codec.encode().expect("encode failed");
+
+    // len(1) + 2 data bytes = 3 bytes, no 4-byte Bytes prefix
+    assert_eq!(encoded.len(), 3);
+    assert_eq!(encoded[0], 0x02);
+    assert_eq!(&encoded[1..3], &[0xBE, 0xAD]);
+
+    let recv_codec = Codec::compile(&schema, "BytesRecv").expect("compile failed");
+    let decoded = recv_codec.decode(&encoded).expect("decode failed");
+
+    assert_eq!(decoded.fields.len(), 2);
+    assert_eq!(decoded.fields[0].1, DecodedValue::U8(2));
+    assert_eq!(
+        decoded.fields[1].1,
+        DecodedValue::Bytes(vec![0xBE, 0xAD])
+    );
+}
+
+#[test]
+fn test_prefix_disabled_string_roundtrip() {
+    let schema_src = r#"
+        #![prefix(disable)]
+
+        #[send]
+        struct StringSend {
+            #[auto(text)]
+            count: u8,
+            text: String = "ABC",
+        }
+
+        #[receive]
+        struct StringRecv {
+            count: u8,
+            #[len_ref(count)]
+            text: String,
+        }
+    "#;
+
+    let schema = parse_schema(schema_src).expect("parse failed");
+    validate_schema(&schema).expect("validation failed");
+
+    let send_codec = Codec::compile(&schema, "StringSend").expect("compile failed");
+    let encoded = send_codec.encode().expect("encode failed");
+
+    assert_eq!(encoded.len(), 4);
+    assert_eq!(encoded[0], 0x03);
+    assert_eq!(&encoded[1..4], b"ABC");
+
+    let recv_codec = Codec::compile(&schema, "StringRecv").expect("compile failed");
+    let decoded = recv_codec.decode(&encoded).expect("decode failed");
+
+    assert_eq!(decoded.fields.len(), 2);
+    assert_eq!(decoded.fields[0].1, DecodedValue::U8(3));
+    assert_eq!(
+        decoded.fields[1].1,
+        DecodedValue::String("ABC".to_string())
+    );
+}
+
+#[test]
+fn test_prefix_disabled_with_remaining() {
+    let schema_src = r#"
+        #![prefix(disable)]
+
+        #[send]
+        struct HeaderSend {
+            magic: u32 = 0x12345678,
+        }
+
+        #[receive]
+        struct HeaderWithRemainingRecv {
+            magic: u32,
+            #[remaining]
+            payload: Bytes,
+        }
+    "#;
+
+    let schema = parse_schema(schema_src).expect("parse failed");
+    validate_schema(&schema).expect("validation failed");
+
+    let send_codec = Codec::compile(&schema, "HeaderSend").expect("compile failed");
+    let mut encoded = send_codec.encode().expect("encode failed");
+    encoded.extend_from_slice(&[0x01, 0x02, 0x03]);
+
+    let recv_codec =
+        Codec::compile(&schema, "HeaderWithRemainingRecv").expect("compile failed");
+    let decoded = recv_codec.decode(&encoded).expect("decode failed");
+
+    assert_eq!(decoded.fields.len(), 2);
+    assert_eq!(decoded.fields[0].1, DecodedValue::U32(0x12345678));
+    assert_eq!(
+        decoded.fields[1].1,
+        DecodedValue::Bytes(vec![0x01, 0x02, 0x03])
+    );
+}
+
+#[test]
+fn test_prefix_disabled_validator_rejects_missing_len_ref() {
+    let schema_src = r#"
+        #![prefix(disable)]
+
+        #[receive]
+        struct BadRecv {
+            data: Vec<u8>,  // no len_ref, no remaining — should fail validation
+        }
+    "#;
+
+    let schema = parse_schema(schema_src).expect("parse failed");
+    let result = validate_schema(&schema);
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("E016"));
+}
+
+#[test]
+fn test_prefix_disabled_and_prefix_enabled_coexist() {
+    // Verify that without prefix(disable), the old behavior is preserved
+    let schema_src = r#"
+        #[send]
+        struct NormalSend {
+            data: Vec<u8> = [1, 2, 3],
+        }
+
+        #[receive]
+        struct NormalRecv {
+            data: Vec<u8>,
+        }
+    "#;
+
+    let schema = parse_schema(schema_src).expect("parse failed");
+    validate_schema(&schema).expect("validation failed");
+
+    let send_codec = Codec::compile(&schema, "NormalSend").expect("compile failed");
+    let encoded = send_codec.encode().expect("encode failed");
+
+    // Normal prefix should still be present
+    assert_eq!(encoded.len(), 7);
+    assert_eq!(&encoded[0..4], &[0x00, 0x00, 0x00, 0x03]);
+    assert_eq!(&encoded[4..7], &[0x01, 0x02, 0x03]);
+}
